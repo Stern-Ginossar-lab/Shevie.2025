@@ -1,0 +1,119 @@
+---
+title: "Frameshift Simulation vs Actual"
+output: html_document
+date: "2024-10-28"
+---
+
+```{r setup, include=FALSE}
+    knitr::opts_chunk$set(echo = TRUE)
+
+    library( ggplot2 )
+    library( DT )
+    library( dplyr )
+    library( tidyr )
+
+    root = paste0( my_home, "/People/Shevie/2025.08/" )
+```
+
+```{r}
+    {
+        if ( Sys.getenv( "RSTUDIO" ) == 1 ) 
+        {
+            file_name = "minU"
+            modif = "utp"
+        }
+        else
+        {
+            file_name = as.character( params[ 1 ] )
+            modif = as.character( params[ 2 ] )
+        }
+    }
+
+#    peaks.in = "SS" ; peaks.out = "SS"; bw = 0.06
+    peaks_are = "UUUC" ; peaks.out = "UUUC"; bw = 0.06
+#    peaks = "DE" ; bw = 0.03
+    
+    win_file = paste0( root, "/outs/frameshift/frameshift/", peaks_are, "/csvs/", file_name, "_", modif, ".tsv" )
+    sim_file = paste0( root, "outs/frameshift/FS_simulations/", peaks_are, "/", file_name, "_", modif, ".10000.tsv" )
+```
+
+```{r}
+    win.o = my_read_table( win_file )
+    sim.o = my_read_table( sim_file, my_row.names = -1 )
+#   > colnames( win.o )
+#    [1] PA.seq    nof_T     dist_next dist_stop codon_pos length   
+#    [7] win_start win_end   F         Fp1       Fm1       total    
+#   [13] F.p       Fp1.p     Fm1.p     Fp1toF    F.p.z     Fp1.p.z  
+#   [19] Fp1toF.z 
+#   > colnames( sim.o )
+#    [1] FS_perc    F_mean     F_median   F_min         F_max           Fp1_mean  
+#    [7] Fp1_median Fp1_min    Fp1_max    Fp1toF_mean   Fp1toF_median   Fp1toF_min   
+#   [13] Fp1toF_max  
+    
+```
+
+```{r}
+    my_summ.titles = c( "mean", "median", "min", "max" )
+    my_summ <- function( arr )
+    {
+        c( mean( arr ), median( arr ), min( arr ), max( arr ) )
+    }
+```
+
+```{r}
+    if ( length( grep( "woT", peaks.out ) ) == 1 )
+        win = win.o %>% filter( nof_T == 0 )
+    if ( length( grep( "wT", peaks.out ) ) == 1 )
+        win = win.o %>% filter( nof_T > 0 )
+    if ( length( grep( "wT", peaks.out ) ) == 0 & length( grep( "woT", peaks.out ) ) == 0 )
+        win = win.o
+
+    actual.vals = c( my_summ( win$F.p.z ), my_summ( win$Fp1.p.z ), my_summ( win$Fp1toF.z ) )
+    actual.mat = matrix( actual.vals, length( actual.vals ), 1 )
+    actual.df = as.data.frame( actual.mat )
+    actual.df$variable = colnames( sim.o )[ 2 : ncol( sim.o ) ]
+    colnames( actual.df )[ 1 ] = "value"
+```
+
+```{r fig.width = 14, fig.height = 8, eval = TRUE}
+    percs = unique( sim.o$FS_perc )
+    for ( perc in percs )
+    {
+        sim = sim.o %>% filter( FS_perc == perc )
+        
+        sim.flat = pivot_longer( sim, 2 : ncol( sim ), names_to = "variable", values_to = "value" )
+        
+        p = ggplot( sim.flat, aes( x = value ) )
+        p = p + geom_density()
+        p = p + geom_point( data = actual.df, size = 3, col = "red", y = 0 )
+        p = p + facet_wrap( ~ variable, ncol = 4, scales = "free" )
+        p = p + ggtitle( paste0( "frameshift in simulation : ", perc, " %") )
+        p = p + theme_bw()
+        p = p + theme( text = element_text( size = 20 ) )
+        p = p + theme( plot.title = element_text( size = 30 ) )
+        print( p )
+    }
+```
+
+```{r eval = TRUE}
+    actual.df.tmp = add_row_names( actual.df[ , c( 2, 1 ) ], TRUE )
+    actual.df.trans = as.data.frame( t( actual.df.tmp ) )
+
+    for ( var in c( "mean", "median" ) )
+    {
+        pdf( paste0( root, "outs/frameshift/FS_simulations/", peaks_are, "/pdf/", file_name, "_", modif, ".", var, ".pdf" ), 7, 7 )
+        for ( perc in c( 1, 2, 3, 5, 6, 7, 10, 12, 15 ) )
+        {
+            sim = sim.o %>% filter( FS_perc == perc )
+            
+            p = ggplot( sim, aes( .data[[ paste0( "Fp1_", var ) ]] ) )
+            p = p + geom_density( bw = bw )
+            p = p + geom_point( data = actual.df.trans, y = 0, col = "red", size = 5 )
+            p = p + geom_point( data = win, aes( x = Fp1.p.z ), y = 0, col = "pink3", size = 2 )
+            p = p + ggtitle( paste0( "frameshift in simulation : ", perc, " %") )
+            p = p + theme_bw()
+            print( p )
+        }
+        dev.off()
+    }
+```

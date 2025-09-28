@@ -1,0 +1,225 @@
+---
+title: "Frameshift simulation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+    knitr::opts_chunk$set(echo = FALSE )
+
+    library( ggplot2 )
+    library( DT )
+    library( tidyr )
+    library( stringr )
+
+#    root = paste0( my_home, "People/Shevie/2024.07.Price/summary/frameshift/" )
+    root = paste0( my_home, "People/Shevie/2025.08/" )
+```
+
+```{r}
+{
+    #
+    #   In the new Price Fluc runs from july 2024, the main frame is assigned to the first position of the codon,
+    #   noot like the situation in the lab pipeline that it is assigned to the middle position, which was also the
+    #   case in the previous Price runs.
+    #
+    main_frame = "first"        # New Fluc July 2024
+    
+    if ( Sys.getenv( "RSTUDIO" ) == 1 ) 
+    {
+        file_name = "minU"
+        #samples_str = "5,6"
+        samples_str = "7,8"
+        all.lens = FALSE
+        nof_iters = 100
+        gene = ""
+#        gene = "ACTB"
+    }
+    else
+    {
+        file_name = as.character( params[ 1 ] )
+        samples_str = as.character( params[ 2 ] )
+        all.lens = as.logical( as.character( params[ 3 ] == "all" ) )
+        nof_iters = nof_iters = as.integer( as.character( params[ 4 ] ) )
+        if ( length( params ) > 4 )
+            gene = as.character( params[ 5 ] )
+        else
+            gene = ""
+    }
+    sample_cols = as.integer( str_split( samples_str, "," ) )
+}
+
+```
+
+```{r}
+    left_trim = 0 * 10
+    right_trim = 0 * 10
+
+    frames = c( "F", "Fp1", "Fm1" )
+    
+    quantiles = c( 0.05, 0.5, 0.95 )
+```
+
+## date `r date()`
+
+## file name : `r file_name`
+
+```{r input}
+    if ( gene == "" )
+        data.o = my_read_table( paste0( root, "/inps/", file_name, ".nucs.tsv" ), my_row.names = -1 )
+    if ( gene != "" )
+        data.o = my_read_table( paste0( root, "/inps/", exp, "/host/", gene, ".tsv" ), my_row.names = -1 )
+
+    data.cds = data.o[ data.o$region == "cds", ]
+        
+    data.trim = data.cds[ ( left_trim + 1 ) : ( nrow ( data.cds ) - right_trim ), ]
+    
+    vals = rowSums( data.trim[ , sample_cols ] )
+    modif = unique( vec_str_split( colnames( data.trim )[ sample_cols ], "_", 1 ) )
+    
+    df.vals = data.frame( matrix( vals, nrow = nrow( data.trim ) / 3, 3, byrow = TRUE ) )
+    colnames( df.vals ) = frames
+```
+
+## Samples used : `r colnames( data.trim )[ sample_cols ]`
+
+## Modification : `r modif`
+
+## Number of simulations for each percentage value = `r nof_iters`
+
+
+```{r}
+    sim_data_sampling <- function( frame, nof_vals = window_size )
+    {
+        sample( df.vals[ , frame ], nof_vals, replace = TRUE )
+    }
+```
+
+```{r}
+    df.thresholds = data.frame()
+    {
+        if ( all.lens )
+        {
+            wins = 5 : 200
+            extra.suffix = ".all."
+        }
+        else
+        {
+            wins = unique( as.integer( 10^seq( log10( 5 ), log10( 500 ), 0.1) ) )
+            extra.suffix = "."
+        }
+    }
+    for ( window_size in wins )
+    {
+        df.window.reads = data.frame()
+        for ( iter in 1 : nof_iters )
+            df.window.reads = rbind( df.window.reads, 
+                               sapply( frames, function( x ) { sum( sim_data_sampling( x ) ) } ) )
+        df.window.reads = df.window.reads[ rowSums( df.window.reads ) > 0, ]
+        df.window = 100 * sweep( df.window.reads, 1, rowSums( df.window.reads ), "/" )
+        colnames( df.window ) = frames
+        threshold.vals = c( window_size )
+        for ( frame in frames )
+        {
+            frame_vals = df.window[ , frame ]
+            threshold.vals = c( threshold.vals, sapply( quantiles, function( x )
+                { quantile( frame_vals, x ) } ), mean( frame_vals ), sd( frame_vals ) )
+        }
+        ratio_vals = as.vector( na.omit( df.window[ , "Fp1" ] / df.window[ , "F" ] ) )
+        threshold.vals = c( threshold.vals, sapply( quantiles, function( x ) { quantile( ratio_vals, x ) } ),
+                            mean( ratio_vals ), sd( ratio_vals ) )
+        df.thresholds = rbind( df.thresholds, threshold.vals )
+    }
+    colnames( df.thresholds ) = c( "window_size", paste.cross( frames, c( quantiles, "mean", "sd" ) ),
+                                   paste0( "Fp1toF_", c( quantiles, "mean", "sd" ) ) )
+    datatable( round( df.thresholds, 3 ) )
+    
+    if ( gene == "" )
+        write.table( df.thresholds, paste0( root, "outs/frameshift/NO_FS_simulations/csvs/", file_name, "_", modif, ".", nof_iters, extra.suffix, "tsv" ),
+                     sep = "\t", row.names = FALSE, quote = FALSE )
+    if ( gene != "" )
+        write.table( df.thresholds, paste0( root, "outs/", exp, "/NO_FS_simulations/host/", gene, ".", modif, ".", nof_iters, extra.suffix, "tsv" ),
+                     sep = "\t", row.names = FALSE, quote = FALSE )
+    
+```
+
+```{r fig.width = 12}
+    df.flat = pivot_longer( df.thresholds, cols = colnames( df.thresholds )[ 2 : ncol( df.thresholds ) ],
+                            names_to = "frame_quantile", values_to = "threshold" )
+    for ( frame in frames )
+        df.flat[ grep( paste0( "^", frame, "_" ), df.flat$frame_quantile ), "frame" ] = frame
+    df.flat = na.omit( df.flat )
+    df.flat$value = vec_str_split( df.flat$frame_quantile, "_", 2 )
+    p = ggplot( df.flat, aes( x = window_size, y = threshold, col = value ) )
+    p = p + geom_line()
+    p = p + facet_grid( ~ frame )
+    p = p + theme_bw()
+    print( p )
+
+```
+
+<!-- The chunks below are about doing a parametric bootstarp based on fitting negative binomial  -->
+<!-- to the number of reads in each one of the frames. Noam less like it so we are doing it -->
+<!-- in a simpler way of just sampling positions from the actual data. -->
+
+```{r eval = FALSE}
+
+    #library( pscl )
+    #library( emdbook )
+
+    sim_data_parametric <- function( frame, nof_vals = window_size )
+    {
+        rzinbinom( nof_vals, mu = dist_params[ "mu", frame ], 
+                          size = dist_params[ "size", frame ],
+                          zprob = dist_params[ "zprob", frame ] )
+        
+    }
+```
+
+```{r dist_params, eval=FALSE}
+## The distribution used for simulating the reads is zero inflated negative bionomial
+
+## These are the distribution parameters extracted from the ribo-seq reads on the input transcript for each one of the 3 frames
+    dist_params = data.frame( matrix( NA, 3, 3 ), row.names = c( "mu", "size", "zprob" ) )
+    colnames( dist_params ) = frames
+    
+    sum_reads = sum( df.vals )
+
+    for ( frame in frames )
+    {
+        vals = df.vals[ , frame ]
+        dist_params[ "fraction %", frame ] = 100 * sum( vals ) / sum_reads
+        fit = zeroinfl( round( vals ) ~ 1, dist = "negbin" )
+        dist_params[ "mu", frame ] = exp( fit$coefficients$count )
+        dist_params[ "size", frame ] = fit$theta
+        ratio = exp( fit$coefficients$zero )
+        dist_params[ "zprob", frame ] = ratio / ( 1 + ratio )
+    }
+    datatable( round( dist_params, 4 ), width = 250 )
+```
+
+```{r eval=FALSE}
+    df.p = data.frame()
+    df.s = data.frame()
+    for ( i in 1 : nof_iters )
+    {
+        df.p = rbind( df.p, sapply( frames, function( x ) { sum( sim_data_parametric( x ) ) } ) )
+        df.s = rbind( df.s, sapply( frames, function( x ) { sum( sim_data_sampling( x ) ) } ) )
+    }
+    colnames( df.p ) = colnames( df.s ) = frames
+    df.p = 100 * sweep( df.p, 1, rowSums( df.p ), "/" )
+    df.s = 100 * sweep( df.s, 1, rowSums( df.s ), "/" )
+    df.p$type = "parametric"
+    df.s$type = "sampling"
+    
+    df = rbind( df.p, df.s )
+```
+
+```{r eval=FALSE}
+    for ( frame in frames )
+    {
+        p = ggplot( df, aes( x = .data[[ frame ]], col = type ) )
+        p = p + geom_density( bw = 1 )
+        p = p + theme_bw()
+        print( p )
+    }
+```

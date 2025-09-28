@@ -1,0 +1,265 @@
+---
+title: ""
+output: html_document
+---
+
+```{r setup, include=FALSE}
+    knitr::opts_chunk$set(echo = FALSE)
+
+    library( ggplot2 )
+    library( DT )
+    library( stringr )
+    library( tidyr )
+    library( plyr )
+    #library( zoo )
+    library( plotly )
+    library( bioseq )
+
+#    root = paste0( my_home, "/People/Shevie/2024.07.Price/summary/frameshift/" )
+    root = paste0( my_home, "/People/Shevie/2025.08/" )
+```
+
+
+```{r echo = TRUE}
+    main_frame = "first"
+    save_files = FALSE    
+    
+    next_point = "ignore"
+#    next_point = "with"
+    
+    # relevant just for the Random option
+    #nof_points = 100
+    
+    # relevant just for the DE option
+    #min_p_val = 1
+    #min_FC = 1
+    
+    
+    {
+        if ( Sys.getenv( "RSTUDIO" ) == 1 ) 
+        {
+            file_name = "spike.n1m"
+            
+            modif = "n1m"
+            #modif = "pseudo"
+            #modif = "utp"
+             
+            #peaks_are = "SS"
+            #peaks_are = "random" ; 
+            #peaks_are = "DE"    
+            peaks_are = "UUUC"    
+            
+            gene = ""
+            #gene = "OAZ1.raw"
+        }
+        else
+        {
+            file_name = as.character( params[ 1 ] )        
+            modif = as.character( params[ 2 ] )        
+            peaks_are = "UUUC"
+            gene = ""
+        }
+    }
+    
+    value_to_use = modif
+#    value_to_use = "all"
+    
+    repls = c( "_a", "_b" ) 
+    stop_codons = c( "TAA", "TAG", "TGA" )
+    
+    frames = c( "F", "Fp1", "Fm1" )
+
+    min_win_length = 10
+    max_win_length = 50
+```
+
+## Date `r date()`
+
+# file name is `r file_name`
+
+# Modification is `r modif`
+
+# Points are `r peaks_are`
+
+## `r if ( peaks_are == "random" ) paste0( " Number of points = ", nof_points )`
+
+## `r if ( peaks_are == "DE" ) paste0( " Min p-value = ", min_p_val, " ; Min log2 FC = ", min_FC )`
+
+# `r if ( gene != "" ) paste0( "Gene is ", gene )`
+
+
+```{r}
+    find_ss <-function()
+    {
+        ss = data.frame()
+        for ( pos in seq( 1, cds_length, 3 ) )
+        {
+            cano_codon = paste( reads.cds$nuc[ pos : ( pos + 2 ) ], collapse = "" )
+            shift_codon = paste( reads.cds$nuc[ ( pos + 1 ) : ( pos + 3 ) ], collapse = "" )
+            if ( seq_translate( dna( cano_codon ) ) == seq_translate( dna( shift_codon ) ) )
+                ss = rbind( ss, c( reads.cds$trans.pos[ pos ], paste( reads.cds$nuc[ pos : ( pos + 5 ) ], collapse = "" ) ) )
+        }
+        ss$nof_T = str_count( ss[ , 2 ], "T" )
+        colnames( ss )[ 1 : 2 ] = c( "trans.pos", "PA.seq" )
+        ss[ , 1 ] = as.numeric( ss[ , 1 ] )
+        return( ss )
+    }
+
+    random_points <- function()
+    {
+        poss = sort( sample( seq( 1, ( cds_length - 1 ), 3  ), nof_points, FALSE ) )
+        df = data.frame( trans.pos = reads.cds$trans.pos[ poss ] )
+        df$PA.seq = sapply( poss, function( pos ) paste( reads.cds$nuc[ pos : ( pos + 5 ) ], collapse = "" ) )
+        df$nof_T = str_count( df$PA.seq, "T" )
+        
+        return( df )
+    }
+    
+    DE_points <- function()
+    {
+        DE.o = my_read_table( paste0( root, "inps/", exp, "/", exp, ".", modif, ".tsv" ), 
+                                        my_row.names = -1 )
+        DE.fil = DE.o %>% filter( pvalue...log10. >= min_p_val ) %>% filter( log2FoldChange >= min_FC )
+        df = data.frame( trans.pos = sort( as.numeric( vec_str_split( DE.fil[ , 1 ], "_", 1 ) ) ) )
+        poss = which( reads.cds$trans.pos %in% df$trans.pos )
+        df$PA.seq = sapply( poss, function( pos ) paste( reads.cds$nuc[ pos : ( pos + 5 ) ], collapse = "" ) )
+        df$nof_T = str_count( df$PA.seq, "T" )
+        
+        return( df )
+    }
+    
+    find_uuuc <-function()
+    {
+        uuuc = data.frame()
+        for ( pos in seq( 1, cds_length, 3 ) )
+        {
+            cano_codon = paste( reads.cds$nuc[ pos : ( pos + 2 ) ], collapse = "" )
+            shift_codon = paste( reads.cds$nuc[ ( pos + 1 ) : ( pos + 3 ) ], collapse = "" )
+            #print( paste( cano_codon, shift_codon ) )
+            if ( cano_codon == "TTT" & shift_codon == "TTC" )
+                uuuc = rbind( uuuc, c( reads.cds$trans.pos[ pos ], paste( reads.cds$nuc[ pos : ( pos + 5 ) ], collapse = "" ) ) )
+        }
+        uuuc$nof_T = str_count( uuuc[ , 2 ], "T" )
+        colnames( uuuc )[ 1 : 2 ] = c( "trans.pos", "PA.seq" )
+        uuuc[ , 1 ] = as.numeric( uuuc[ , 1 ] )
+        return( uuuc )
+    }
+```
+
+```{r}
+    if ( gene == "" )
+        reads.o = my_read_table( paste0( root, "inps/", file_name, ".nucs.tsv" ), my_row.names = -1 )
+    if ( gene != "" )
+        reads.o = my_read_table( paste0( root, "inps/", exp, "/host/", gene, ".tsv" ), my_row.names = -1 )
+    reads.o[ , modif ] = rowSums( reads.o[ , grep( modif, colnames( reads.o ) ) ] )
+    reads.cds = reads.o[ reads.o$region == "cds", ]
+    cds_length = nrow( reads.cds )
+    
+    if ( peaks_are == "SS" )
+        peaks.df = find_ss()
+    if ( peaks_are == "random" )
+        peaks.df = random_points()
+    if ( peaks_are == "DE" )
+        peaks.df = DE_points()
+    if ( peaks_are == "UUUC" )
+        peaks.df = find_uuuc()
+    #   The distance between peaks / slippery sites is in codons
+    peaks.df$dist_next = c( diff( peaks.df$trans.pos ), cds_length - peaks.df$trans.pos[ nrow( peaks.df ) ] - 1 ) / 3
+    
+    if ( gene == "" )
+        thresholds.o = my_read_table( paste0( root, "outs/frameshift/NO_FS_simulations/csvs/", file_name, "_", modif, ".10000.all.tsv" ),
+                                  my_row.names = -1 )
+    if ( gene != "" )
+        thresholds.o = my_read_table( paste0( root, "outs/", exp, "/NO_FS_simulations/host/", gene, "_", modif, ".10000.all.tsv" ),
+                                  my_row.names = -1 )
+```
+
+```{r}
+    codons = list()
+    for ( frame in 1 : 3 )
+        codons[[ frame ]] = sapply( seq( frame, cds_length, 3 ), 
+                                    function( pos ) paste( reads.cds$nuc[ pos : ( pos + 2 ) ], collapse = "" ) )
+    codons[[ 2 ]][ length( codons[[ 1 ]] ) ] = NA
+    codons[[ 3 ]][ length( codons[[ 1 ]] ) ] = NA
+    
+    codons.df = data.frame( pos = reads.cds$trans.pos[ seq( 1, cds_length, 3 ) ], 
+                            F = codons[[ 1 ]], Fp1 = codons[[ 2 ]], Fm1 = codons[[ 3 ]] )
+    for ( frame in frames )
+        codons.df[ , paste0( "stop.", frame ) ] = codons.df[ , frame ] %in% stop_codons
+    datatable( codons.df, width = 400 )
+    if ( save_files )
+        write.table( codons.df, paste0( root, "inps/", exp, ".codons.tsv" ),
+                     sep = "\t", quote = FALSE, row.names = FALSE )
+```
+
+```{r}
+    for ( n in 1 : nrow( peaks.df ) )
+    {
+        start = peaks.df$trans.pos[ n ]
+        line = which( codons.df$pos == start )
+        peaks.df[ n, "dist_stop" ] = min( which( codons.df$stop.Fp1[ line : nrow( codons.df ) ] )[ 1 ], nrow( codons.df ) - line, na.rm = TRUE ) - 1
+        peaks.df[ n , "codon_pos" ] = line
+    }
+    if ( next_point == "with" )
+        peaks.df[ , "length" ] = apply( peaks.df[ , grep( "dist", colnames( peaks.df ) ) ], 1, min )
+    if ( next_point == "ignore" )
+        peaks.df[ , "length" ] = peaks.df[ , "dist_stop" ]
+    peaks.df$length = sapply( peaks.df$length, function( len ) if ( len > max_win_length ) 
+                min( len, sample( as.integer( 0.5 * max_win_length ) : max_win_length , 1 ) ) else len )
+    peaks.df[ , "win_start" ] = peaks.df$trans.pos + 3
+    peaks.df[ , "win_end" ] = peaks.df$win_start + 3 * ( peaks.df$length - 1 ) - 1
+    datatable( peaks.df, width = 400 )
+    if ( save_files )
+        write.table( peaks.df, paste0( root, "inps/", exp, ".", sample, ".peaks.tsv" ),
+                     sep = "\t", quote = FALSE, row.names = FALSE )
+```
+
+```{r}
+    valid.peaks.df = peaks.df %>% filter( length >= min_win_length ) 
+
+    for ( n in 1 : nrow( valid.peaks.df ) )
+    {
+        window.reads = reads.o[ valid.peaks.df$win_start[ n ] : valid.peaks.df$win_end[ n ], ]
+        if ( main_frame == "middle" )
+        {
+            valid.peaks.df[ n , "F" ] = sum( window.reads[ seq( 2, nrow( window.reads ), 3 ), value_to_use ] )
+            valid.peaks.df[ n , "Fp1" ] = sum( window.reads[ seq( 3, nrow( window.reads ), 3 ), value_to_use ] )
+            valid.peaks.df[ n , "Fm1" ] = sum( window.reads[ seq( 1, nrow( window.reads ), 3 ), value_to_use ] )
+        }
+        if ( main_frame == "first" )
+        {
+            valid.peaks.df[ n , "F" ] = sum( window.reads[ seq( 1, nrow( window.reads ), 3 ), value_to_use ] )
+            valid.peaks.df[ n , "Fp1" ] = sum( window.reads[ seq( 2, nrow( window.reads ), 3 ), value_to_use ] )
+            valid.peaks.df[ n , "Fm1" ] = sum( window.reads[ seq( 3, nrow( window.reads ), 3 ), value_to_use ] )
+        }
+    }
+    valid.peaks.df$total = valid.peaks.df$F + valid.peaks.df$Fp1 + valid.peaks.df$Fm1
+    valid.peaks.df[ , "F.p" ] = 100.0 * valid.peaks.df[ , "F" ] / valid.peaks.df$total
+    valid.peaks.df[ , "Fp1.p" ] = 100.0 * valid.peaks.df[ , "Fp1" ] / valid.peaks.df$total
+    valid.peaks.df[ , "Fm1.p" ] = 100.0 * valid.peaks.df[ , "Fm1" ] / valid.peaks.df$total
+    valid.peaks.df[ , "Fp1toF" ] = valid.peaks.df$Fp1.p / valid.peaks.df$F.p
+
+```
+
+```{r}
+    for ( n in 1 : nrow( valid.peaks.df ) )
+    {
+        len = valid.peaks.df$length[ n ]
+        line = which( thresholds.o$window_size == len )
+        
+        valid.peaks.df$F.p.z[ n ] = ( valid.peaks.df$F.p[ n ] - thresholds.o$F_mean[ line ] ) / thresholds.o$F_sd[ line ]
+        valid.peaks.df$Fp1.p.z[ n ] = ( valid.peaks.df$Fp1.p[ n ] - thresholds.o$Fp1_mean[ line ] ) / thresholds.o$Fp1_sd[ line ]
+        valid.peaks.df$Fp1toF.z[ n ] = ( valid.peaks.df$Fp1toF[ n ] - thresholds.o$Fp1toF_mean[ line ] ) / thresholds.o$Fp1toF_sd[ line ]
+    }
+    for ( col in grep( "F", colnames( valid.peaks.df ) ) )
+        valid.peaks.df[ , col ] = round( valid.peaks.df[ , col ], 2 )
+    valid.peaks.df$total = round( valid.peaks.df$total, 2 )
+    valid.peaks.df = valid.peaks.df[ order( valid.peaks.df$Fp1.p.z, decreasing = TRUE ), ]
+    if ( gene == "" )
+        write.table( valid.peaks.df, paste0( root, "/outs/frameshift/frameshift/", peaks_are, "/csvs/", file_name, "_", value_to_use, ".tsv" ),
+                     sep = "\t", quote = FALSE, row.names = FALSE )
+    if ( gene != "" )
+        write.table( valid.peaks.df, paste0( root, "/outs/", exp, "/frameshift/host/", gene, ".", value_to_use, ".tsv" ),
+                     sep = "\t", quote = FALSE, row.names = FALSE )
+    datatable( valid.peaks.df )
+```
